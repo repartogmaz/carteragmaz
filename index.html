@@ -1085,6 +1085,35 @@ Responde ÚNICAMENTE con JSON válido sin markdown: {"referencia":"CODIGO","valo
   }
 }
 
+async function subirComprobante(b64, pagoId){
+  // Convert base64 to blob
+  try{
+    const arr=b64.split(',');
+    const mt=arr[0].match(/:(.*?);/)[1];
+    const ext=mt.includes('png')?'png':mt.includes('webp')?'webp':'jpg';
+    const bstr=atob(arr[1]);
+    const u8=new Uint8Array(bstr.length);
+    for(let i=0;i<bstr.length;i++)u8[i]=bstr.charCodeAt(i);
+    const blob=new Blob([u8],{type:mt});
+    const filename=`pago_${pagoId}_${Date.now()}.${ext}`;
+    const res=await fetch(`${SB_URL}/storage/v1/object/comprobantes/${filename}`,{
+      method:'POST',
+      headers:{
+        'Authorization':'Bearer '+SB_KEY,
+        'apikey':SB_KEY,
+        'Content-Type':mt,
+        'x-upsert':'true'
+      },
+      body:blob
+    });
+    if(!res.ok)throw new Error(await res.text());
+    return `${SB_URL}/storage/v1/object/public/comprobantes/${filename}`;
+  }catch(e){
+    console.error('Error subiendo comprobante:',e);
+    return null;
+  }
+}
+
 async function guardarPago(cId){
   if(PS.esDuplicado){showToast('Pago bloqueado — comprobante duplicado');return}
   const fecha=document.getElementById('p-fecha')?.value||hoyStr;
@@ -1101,12 +1130,21 @@ async function guardarPago(cId){
   setLoading('Guardando pago…');
   try{
     // 1. Insertar pago
+    // Subir comprobante a Storage si existe
     const pagoRes=await sbInsert('pagos',{
       cliente_id:cId,fecha,medio,valor:total,observaciones:obs,
       ref_ia:PS.refIA||null,hash_imagen:PS.hashComp||null,
       registrado_por:S.nom
     });
     const pagoId=pagoRes[0].id;
+    // Subir imagen y actualizar URL
+    if(PS.comp){
+      const url=await subirComprobante(PS.comp, pagoId);
+      if(url){
+        await sbUpdate('pagos',{comprobante_url:url},[['id','eq.'+pagoId]]);
+        pagoRes[0].comprobante_url=url;
+      }
+    }
 
     // 2. Actualizar saldos y registrar pago_documentos
     const docsAfectados=[];
@@ -1130,7 +1168,7 @@ async function guardarPago(cId){
     }
 
     // 4. Actualizar cache local
-    PAGOS.unshift({id:pagoId,cliente_id:cId,fecha,medio,valor:total,observaciones:obs,registrado_por:S.nom,docsAfectados});
+    PAGOS.unshift({id:pagoId,cliente_id:cId,fecha,medio,valor:total,observaciones:obs,registrado_por:S.nom,docsAfectados,comprobante_url:pagoRes[0].comprobante_url||null});
     // Recargar docs desde Supabase para tener saldos frescos
     DOCS=await sbFetch('documentos',{filters:[['saldo','gt.0']],order:'vencimiento.asc'});
 
