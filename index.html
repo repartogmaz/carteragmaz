@@ -844,7 +844,7 @@ async function verificarIA(b64){
   const iaEl=document.getElementById('ia-est');
   const mt=b64.includes('image/png')?'image/png':b64.includes('image/webp')?'image/webp':'image/jpeg';
   try{
-    const resp=await fetch('https://api.anthropic.com/v1/messages',{
+    const resp=await fetch('https://qwgauxyphjlywogqqdof.supabase.co/functions/v1/swift-api',{
       method:'POST',
       headers:{'Content-Type':'application/json','anthropic-version':'2023-06-01'},
       body:JSON.stringify({
