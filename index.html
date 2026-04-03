@@ -252,9 +252,44 @@ body{font-family:'Barlow',sans-serif;background:var(--negro);color:var(--txt);mi
 .loading-overlay .l-txt{font-size:13px;color:rgba(255,255,255,.45);letter-spacing:1px;text-align:center}
 .sync-dot{width:8px;height:8px;border-radius:50%;background:var(--verde);animation:pulse 1.5s ease-in-out infinite}
 @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.8)}}
+
+/* Tabs dentro de gerencia */
+.ger-tabs{display:flex;gap:0;border-bottom:1px solid var(--borde);margin-bottom:16px}
+.ger-tab{flex:1;padding:10px;font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:12px;letter-spacing:.5px;text-transform:uppercase;color:var(--txt-s);background:none;border:none;cursor:pointer;border-bottom:2px solid transparent;transition:all .2s}
+.ger-tab.activo{color:var(--rojo);border-bottom-color:var(--rojo)}
+
+/* Anulaciones */
+.anul-item{border:1.5px solid var(--borde);border-radius:10px;padding:13px;margin-bottom:8px;display:flex;gap:10px;align-items:flex-start}
+.anul-badge{font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;padding:3px 9px;border-radius:4px}
+.anul-badge.pendiente{background:#FFF3CD;color:#856404}
+.anul-badge.aprobada{background:#D4EDDA;color:#155724}
+.anul-badge.rechazada{background:#FFE0E0;color:#C00}
+.btn-sm{border:none;border-radius:7px;padding:6px 13px;font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:12px;cursor:pointer;letter-spacing:.3px}
+.btn-sm.verde{background:#D4EDDA;color:#155724}
+.btn-sm.rojo{background:#FFE0E0;color:#C00}
+.btn-sm.gris{background:var(--panel);color:var(--txt-s)}
 </style>
 </head>
 <body>
+<!-- 
+EJECUTAR EN SUPABASE SQL EDITOR (tabla nueva para anulaciones):
+
+create table if not exists anulaciones (
+  id serial primary key,
+  documento_id integer references documentos(id),
+  cliente_id integer references clientes(id),
+  numero_doc text,
+  valor_doc bigint,
+  motivo text,
+  estado text not null check (estado in ('pendiente','aprobada','rechazada')) default 'pendiente',
+  solicitado_por text,
+  resuelto_por text,
+  resuelto_en timestamptz,
+  creado_en timestamptz default now()
+);
+alter table anulaciones disable row level security;
+-->
+
 
 <!-- LOADING -->
 <div class="loading-overlay" id="loading-overlay" style="display:none">
@@ -359,7 +394,8 @@ async function sbUpdate(table, body, filters) {
 let S=null, F={estado:'todos',tipo:'todos'}, tabActual='cartera';
 
 // Cache en memoria (se recarga desde Supabase)
-let CLIENTES=[], DOCS=[], PAGOS=[], FEMSA_ENTREGADO={};
+let CLIENTES=[], DOCS=[], PAGOS=[], FEMSA_ENTREGADO={}, ANULACIONES=[];
+let gerTabActual='resumen'; // resumen | pagos | femsa | anulaciones
 
 // ═══════════════════════════════════════════════
 // HELPERS
@@ -420,6 +456,10 @@ async function cargarDatos(){
   const femsa = await sbFetch('femsa_entregado');
   FEMSA_ENTREGADO = {};
   femsa.forEach(f=>FEMSA_ENTREGADO[f.documento_id]=true);
+
+  setLoading('Cargando solicitudes de anulación…');
+  try{ ANULACIONES = await sbFetch('anulaciones', {order:'creado_en.desc'}); }
+  catch{ ANULACIONES = []; }
 
   setLoading(null);
 }
@@ -601,8 +641,37 @@ function abrirDetalle(id){
 // ═══════════════════════════════════════════════
 // TAB GERENCIA
 // ═══════════════════════════════════════════════
+function setGerTab(tab, btn){
+  gerTabActual=tab;
+  document.querySelectorAll('.ger-tab').forEach(b=>b.classList.remove('activo'));
+  btn.classList.add('activo');
+  renderGerContenido();
+}
+
 function renderGerencia(){
   const mc=document.getElementById('main');
+  const pendAnul=ANULACIONES.filter(a=>a.estado==='pendiente').length;
+  mc.innerHTML=`
+    <div class="ger-tabs">
+      <button class="ger-tab ${gerTabActual==='resumen'?'activo':''}" onclick="setGerTab('resumen',this)">📊 Resumen</button>
+      <button class="ger-tab ${gerTabActual==='pagos'?'activo':''}" onclick="setGerTab('pagos',this)">💰 Pagos</button>
+      <button class="ger-tab ${gerTabActual==='femsa'?'activo':''}" onclick="setGerTab('femsa',this)">📨 FEMSA</button>
+      <button class="ger-tab ${gerTabActual==='anulaciones'?'activo':''}" onclick="setGerTab('anulaciones',this)">🗑 Anulaciones${pendAnul>0?` <span style="background:var(--alerta);color:#fff;border-radius:10px;padding:1px 6px;font-size:10px">${pendAnul}</span>`:''}
+      </button>
+    </div>
+    <div id="ger-contenido"></div>`;
+  renderGerContenido();
+}
+
+function renderGerContenido(){
+  if(gerTabActual==='resumen') renderGerResumen();
+  else if(gerTabActual==='pagos') renderGerPagos();
+  else if(gerTabActual==='femsa') renderGerFemsa();
+  else if(gerTabActual==='anulaciones') renderGerAnulaciones();
+}
+
+function renderGerResumen(){
+  const cont=document.getElementById('ger-contenido');
   const docsAct=DOCS.filter(d=>d.saldo>0);
   const totalCart=suma(docsAct),totalVenc=suma(docsAct.filter(d=>dias(d.vencimiento)<0));
   const totalCob=suma(PAGOS.map(p=>{return{saldo:p.valor}}));
@@ -619,7 +688,7 @@ function renderGerencia(){
   const porTipo=['informal','formal','local','diario'].map(t=>{const cls=CLIENTES.filter(c=>c.tipo===t);const s=suma(DOCS.filter(d=>cls.some(c=>c.id===d.cliente_id)&&d.saldo>0));return{tipo:t,total:s};});
   const maxAntig=Math.max(bucket_venc.corriente,bucket_venc.p8,bucket_venc.p30,bucket_venc.mayor30,1);
 
-  mc.innerHTML=`
+  cont.innerHTML=`
     <div class="btns-ger">
       <button class="btn-print" onclick="window.print()">
         <svg viewBox="0 0 24 24"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v8H6z"/></svg>
@@ -680,6 +749,142 @@ function renderGerencia(){
     </div>`;
 }
 
+function renderGerPagos(){
+  const cont=document.getElementById('ger-contenido');
+  if(!cont)return;
+  const pagosOrdenados=[...PAGOS].sort((a,b)=>new Date(b.fecha)-new Date(a.fecha));
+  if(!pagosOrdenados.length){
+    cont.innerHTML='<div class="empty"><div class="ico">💳</div><p>Sin pagos registrados</p></div>';
+    return;
+  }
+  // Totales rápidos
+  const totalEf=suma(PAGOS.filter(p=>p.medio==='efectivo').map(p=>({saldo:p.valor})));
+  const totalTr=suma(PAGOS.filter(p=>p.medio==='transferencia').map(p=>({saldo:p.valor})));
+  const totalWa=suma(PAGOS.filter(p=>p.medio==='wallet').map(p=>({saldo:p.valor})));
+  const totalTodo=totalEf+totalTr+totalWa;
+
+  cont.innerHTML=`
+    <div class="res-grid" style="margin-bottom:16px">
+      <div class="res-card full"><div class="etq">Total Cobrado</div><div class="val-big verde">${fmt(totalTodo)}</div><div class="val-sm">${PAGOS.length} pagos registrados</div></div>
+      <div class="res-card"><div class="etq">💵 Efectivo</div><div class="val-big" style="font-size:18px">${fmt(totalEf)}</div></div>
+      <div class="res-card"><div class="etq">🏦 Transferencia</div><div class="val-big" style="font-size:18px">${fmt(totalTr)}</div></div>
+      <div class="res-card full"><div class="etq">💳 Wallet FEMSA</div><div class="val-big" style="font-size:18px">${fmt(totalWa)}</div></div>
+    </div>
+    <div class="ger-section">
+      <div class="ger-sec-hdr"><h3>Historial de Pagos</h3><span class="badge badge-verde">${PAGOS.length} registros</span></div>
+      <div class="ger-sec-body">
+        ${pagosOrdenados.map(p=>{
+          const c=CLIENTES.find(x=>x.id===p.cliente_id);
+          return`<div class="pago-item">
+            <div class="pago-ico ${medioCls(p.medio)}">${medioIco(p.medio)}</div>
+            <div class="pago-det">
+              <div class="pago-val">${fmt(p.valor)}</div>
+              <div class="pago-meta">${p.fecha} · ${medioLbl(p.medio)} · ${p.registrado_por}</div>
+              <div class="pago-meta">${c?c.ruta+' · SAP '+c.sap+' · '+c.nombre:'—'}</div>
+              <div class="pago-meta">Docs: ${(p.docsAfectados||[]).join(', ')}</div>
+              ${p.observaciones?`<div class="pago-obs">"${p.observaciones}"</div>`:''}
+              ${p.ref_ia?`<div class="pago-meta" style="color:var(--verde)">Ref: ${p.ref_ia}</div>`:''}
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`;
+}
+
+function renderGerFemsa(){
+  const cont=document.getElementById('ger-contenido');
+  if(!cont)return;
+  const docsFemsaPend=DOCS.filter(d=>{const c=CLIENTES.find(x=>x.id===d.cliente_id);return d.saldo>0&&['informal','formal'].includes(c?.tipo||'')&&!FEMSA_ENTREGADO[d.id];});
+  const docsFemsaOk=Object.keys(FEMSA_ENTREGADO).length;
+  cont.innerHTML=`
+    <div class="ger-section">
+      <div class="ger-sec-hdr"><h3>📨 Documentos para FEMSA</h3><span class="badge ${docsFemsaPend.length>0?'badge-rojo':'badge-verde'}">${docsFemsaPend.length} pendientes</span></div>
+      <div class="ger-sec-body">
+        <p style="font-size:12px;color:var(--txt-s);margin-bottom:12px">Créditos Informal y Formal FEMSA. Marque como entregado al enviar el físico.</p>
+        ${docsFemsaPend.length===0?`<p style="font-size:13px;color:var(--verde);text-align:center;padding:10px 0">✓ Todos enviados</p>`:''}
+        ${docsFemsaPend.map(doc=>{const c=CLIENTES.find(x=>x.id===doc.cliente_id);const dv=dias(doc.vencimiento);return`<div class="femsa-item"><div class="femsa-check" id="fc-${doc.id}" onclick="toggleFemsa(${doc.id})"></div><div class="femsa-det"><div class="fn">${doc.numero} ${dv<0?'<span style="color:var(--alerta);font-size:11px">⚠ VENCIDO</span>':''}</div><div class="fm">${c.ruta} · SAP ${c.sap} · ${c.nombre}</div><div class="fm">${tipoLbl(c.tipo)} · ${doc.emision} → ${doc.vencimiento}</div></div><div class="femsa-val">${fmt(doc.saldo)}</div></div>`;}).join('')}
+        ${docsFemsaOk>0?`<p style="font-size:11px;color:var(--verde);margin-top:8px">✓ ${docsFemsaOk} marcado${docsFemsaOk!==1?'s':''} como entregado${docsFemsaOk!==1?'s':''}</p>`:''}
+      </div>
+    </div>`;
+}
+
+function renderGerAnulaciones(){
+  const cont=document.getElementById('ger-contenido');
+  if(!cont)return;
+  const pendientes=ANULACIONES.filter(a=>a.estado==='pendiente');
+  const historial=ANULACIONES.filter(a=>a.estado!=='pendiente');
+  cont.innerHTML=`
+    <div class="ger-section">
+      <div class="ger-sec-hdr"><h3>🗑 Solicitudes Pendientes</h3><span class="badge ${pendientes.length>0?'badge-rojo':'badge-verde'}">${pendientes.length}</span></div>
+      <div class="ger-sec-body">
+        ${pendientes.length===0?'<p style="font-size:13px;color:var(--verde);text-align:center;padding:10px 0">✓ Sin solicitudes pendientes</p>':''}
+        ${pendientes.map(a=>{
+          const doc=DOCS.find(d=>d.id===a.documento_id)||{numero:a.numero_doc||'—',valor:a.valor_doc||0};
+          const c=CLIENTES.find(x=>x.id===a.cliente_id);
+          return`<div class="anul-item">
+            <div style="flex:1">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
+                <span style="font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:16px">${doc.numero}</span>
+                <span class="anul-badge pendiente">Pendiente</span>
+              </div>
+              <div style="font-size:12px;color:var(--txt-s)">${c?c.ruta+' · '+c.nombre:'—'} · ${fmt(doc.saldo||doc.valor||0)}</div>
+              <div style="font-size:12px;color:var(--txt-s);margin-top:3px">Solicitado por: ${a.solicitado_por} · ${a.creado_en?.split('T')[0]||''}</div>
+              ${a.motivo?`<div style="font-size:12px;color:var(--txt);margin-top:4px;font-style:italic">"${a.motivo}"</div>`:''}
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0">
+              <button class="btn-sm verde" onclick="resolverAnulacion(${a.id},'aprobada')">✓ Aprobar</button>
+              <button class="btn-sm rojo" onclick="resolverAnulacion(${a.id},'rechazada')">✕ Rechazar</button>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>
+    ${historial.length>0?`
+    <div class="ger-section">
+      <div class="ger-sec-hdr"><h3>Historial</h3></div>
+      <div class="ger-sec-body">
+        ${historial.slice(0,10).map(a=>{
+          const doc=DOCS.find(d=>d.id===a.documento_id)||{numero:a.numero_doc||'—'};
+          return`<div class="anul-item" style="opacity:.7">
+            <div style="flex:1">
+              <div style="display:flex;align-items:center;gap:8px">
+                <span style="font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:15px">${doc.numero}</span>
+                <span class="anul-badge ${a.estado}">${a.estado==='aprobada'?'Aprobada':'Rechazada'}</span>
+              </div>
+              <div style="font-size:11px;color:var(--txt-s);margin-top:3px">Por: ${a.solicitado_por} · ${a.creado_en?.split('T')[0]||''}</div>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`:''}`;
+}
+
+async function resolverAnulacion(anulId, estado){
+  const confirmMsg = estado==='aprobada' ? '¿Aprobar esta anulación? El documento quedará marcado como anulado.' : '¿Rechazar esta solicitud?';
+  if(!confirm(confirmMsg)) return;
+  setLoading(estado==='aprobada'?'Aprobando anulación…':'Rechazando solicitud…');
+  try{
+    const anulacion = ANULACIONES.find(a=>a.id===anulId);
+    await sbUpdate('anulaciones',{estado, resuelto_por:S.nom, resuelto_en:new Date().toISOString()},[['id','eq.'+anulId]]);
+    if(estado==='aprobada' && anulacion?.documento_id){
+      // Marcar documento como anulado (saldo=0, observaciones=ANULADO)
+      await sbUpdate('documentos',{saldo:0, observaciones:'ANULADO - '+anulacion.motivo},[['id','eq.'+anulacion.documento_id]]);
+      // Actualizar cache local
+      const doc=DOCS.find(d=>d.id===anulacion.documento_id);
+      if(doc){doc.saldo=0;doc.observaciones='ANULADO';}
+    }
+    // Recargar anulaciones
+    ANULACIONES = await sbFetch('anulaciones',{order:'creado_en.desc'});
+    setLoading(null);
+    showToast(estado==='aprobada'?'✓ Anulación aprobada':'Solicitud rechazada');
+    renderGerencia();
+  }catch(e){
+    setLoading(null);
+    showToast('Error al procesar');
+    console.error(e);
+  }
+}
+
 async function toggleFemsa(docId){
   if(FEMSA_ENTREGADO[docId]){
     await sbFetch('femsa_entregado', {method:'DELETE', filters:[['documento_id','eq.'+docId]]});
@@ -727,12 +932,12 @@ function renderLiqLista(){
 }
 
 // ── MODAL PAGO ──
-let PS={cId:null,sel:{},comp:null,hashComp:null,refIA:null,extractedMeta:{}};
+let PS={cId:null,sel:{},comp:null,hashComp:null,refIA:null,extractedMeta:{},esDuplicado:false};
 let currentCompFile=null;
 
 function abrirPago(cId){
   const c=CLIENTES.find(x=>x.id===cId);
-  PS={cId,sel:{},comp:null,hashComp:null,refIA:null,extractedMeta:{}};
+  PS={cId,sel:{},comp:null,hashComp:null,refIA:null,extractedMeta:{},esDuplicado:false};
   document.getElementById('mp-meta').textContent=`${c.ruta} · SAP ${c.sap} · ${c.nombre}`;
   const docs=dC(cId).filter(d=>d.saldo>0).sort((a,b)=>new Date(a.vencimiento)-new Date(b.vencimiento));
   const docsH=docs.map(doc=>{
@@ -881,6 +1086,7 @@ Responde ÚNICAMENTE con JSON válido sin markdown: {"referencia":"CODIGO","valo
 }
 
 async function guardarPago(cId){
+  if(PS.esDuplicado){showToast('Pago bloqueado — comprobante duplicado');return}
   const fecha=document.getElementById('p-fecha')?.value||hoyStr;
   const medio=document.getElementById('p-medio')?.value||'efectivo';
   const obs=document.getElementById('p-obs')?.value||'';
@@ -942,12 +1148,115 @@ async function guardarPago(cId){
 // ═══════════════════════════════════════════════
 // TAB NUEVO DOCUMENTO
 // ═══════════════════════════════════════════════
+function filtrarClientesDoc(){
+  const q=(document.getElementById('nd-busq')?.value||'').toLowerCase().trim();
+  const dd=document.getElementById('nd-dropdown');
+  if(!dd)return;
+  if(q.length<2){dd.style.display='none';return;}
+  const resultados=CLIENTES.filter(c=>
+    c.nombre.toLowerCase().includes(q)||
+    c.sap.includes(q)||
+    c.ruta.toLowerCase().includes(q)
+  ).slice(0,8);
+  if(!resultados.length){dd.style.display='none';return;}
+  dd.innerHTML=resultados.map(c=>`
+    <div onclick="seleccionarClienteDoc(${c.id})" style="padding:10px 13px;cursor:pointer;border-bottom:1px solid var(--borde);transition:background .1s"
+      onmouseover="this.style.background='#FFF8F8'" onmouseout="this.style.background=''">
+      <div style="font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:14px;color:var(--rojo)">${c.ruta}</div>
+      <div style="font-size:11px;color:var(--txt-s)">SAP ${c.sap}</div>
+      <div style="font-size:13px;font-weight:600;color:var(--txt)">${c.nombre}</div>
+      <div style="margin-top:3px"><span style="font-size:11px;background:#EFF6FF;color:#2563EB;padding:2px 7px;border-radius:5px">${tipoLbl(c.tipo)}</span></div>
+    </div>`).join('');
+  dd.style.display='block';
+}
+
+function seleccionarClienteDoc(id){
+  const c=CLIENTES.find(x=>x.id===id);
+  if(!c)return;
+  document.getElementById('nd-c').value=id;
+  document.getElementById('nd-busq').value=`${c.ruta} · ${c.sap} · ${c.nombre}`;
+  document.getElementById('nd-dropdown').style.display='none';
+  const sel=document.getElementById('nd-seleccionado');
+  sel.innerHTML=`✓ <strong>${c.ruta}</strong> · SAP ${c.sap} · ${c.nombre} · ${tipoLbl(c.tipo)} · Cupo: ${fmt(c.cupo)}`;
+  sel.style.display='block';
+  // Auto-set tipo credito based on client type
+  const mapTipo={informal:'8',formal:'30',local:'8b',diario:'1'};
+  const el=document.getElementById('nd-cr');
+  if(el)el.value=mapTipo[c.tipo]||'8';
+  calcVence();
+}
+
+function mostrarNuevoCliente(){
+  const f=document.getElementById('form-nuevo-cliente');
+  f.style.display=f.style.display==='none'?'block':'none';
+}
+
+async function guardarNuevoCliente(){
+  const sap=(document.getElementById('nc-sap')?.value||'').trim();
+  const ruta=(document.getElementById('nc-ruta')?.value||'').trim().toUpperCase();
+  const nombre=(document.getElementById('nc-nombre')?.value||'').trim();
+  const tipo=document.getElementById('nc-tipo')?.value;
+  const cupo=parseFloat(document.getElementById('nc-cupo')?.value)||0;
+  if(!sap||sap.length!==10||!ruta||!nombre){showToast('Completa todos los campos (SAP debe tener 10 dígitos)');return}
+  setLoading('Guardando cliente…');
+  try{
+    const res=await sbInsert('clientes',{sap,nombre,ruta,tipo,cupo,activo:true});
+    CLIENTES.push(res[0]);
+    setLoading(null);
+    showToast(`✓ Cliente ${nombre} agregado`);
+    // Auto-select the new client
+    seleccionarClienteDoc(res[0].id);
+    document.getElementById('form-nuevo-cliente').style.display='none';
+  }catch(e){
+    setLoading(null);
+    if(e.message.includes('unique'))showToast('SAP ya existe en el sistema');
+    else showToast('Error al guardar cliente');
+    console.error(e);
+  }
+}
+
+// Cerrar dropdown al hacer click fuera
+document.addEventListener('click',e=>{
+  const dd=document.getElementById('nd-dropdown');
+  if(dd&&!dd.contains(e.target)&&e.target.id!=='nd-busq')dd.style.display='none';
+});
+
 function renderNuevoDoc(){
   document.getElementById('main').innerHTML=`
     <div class="liq-form">
       <h3>Ingresar Nuevo Documento</h3>
-      <div class="f-campo"><label>Cliente</label>
-        <select id="nd-c"><option value="">— Seleccionar —</option>${CLIENTES.map(c=>`<option value="${c.id}">${c.ruta} · ${c.sap} · ${c.nombre}</option>`).join('')}</select>
+      <div class="f-campo">
+        <label>Buscar Cliente (nombre, SAP o ruta)</label>
+        <div style="position:relative">
+          <input type="text" id="nd-busq" placeholder="Ej: El Trigal, 0012345001, KA4V21…" oninput="filtrarClientesDoc()" autocomplete="off"
+            style="width:100%;background:var(--panel);border:1.5px solid var(--borde);border-radius:9px;padding:11px 14px;font-family:'Barlow',sans-serif;font-size:14px;color:var(--txt);outline:none">
+          <div id="nd-dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--blanco);border:1.5px solid var(--rojo);border-radius:9px;z-index:50;max-height:200px;overflow-y:auto;box-shadow:0 4px 20px rgba(0,0,0,.12)"></div>
+        </div>
+        <input type="hidden" id="nd-c" value="">
+        <div id="nd-seleccionado" style="display:none;margin-top:8px;background:#F0FDF4;border:1.5px solid #00875A;border-radius:8px;padding:10px 13px;font-size:13px;color:#155724"></div>
+      </div>
+      <div class="f-campo" style="margin-top:6px">
+        <label>¿Cliente no existe? <button type="button" onclick="mostrarNuevoCliente()" style="background:none;border:none;color:var(--rojo);font-size:13px;font-weight:700;cursor:pointer;text-decoration:underline">+ Agregar nuevo cliente</button></label>
+        <div id="form-nuevo-cliente" style="display:none;margin-top:10px;background:var(--panel);border:1.5px solid var(--borde);border-radius:10px;padding:14px">
+          <div style="font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:15px;margin-bottom:12px">Nuevo Cliente</div>
+          <div class="f-row2">
+            <div class="f-campo"><label>Código SAP (10 dígitos)</label><input type="text" id="nc-sap" placeholder="0012345001" maxlength="10"></div>
+            <div class="f-campo"><label>Ruta</label><input type="text" id="nc-ruta" placeholder="KA4V21"></div>
+          </div>
+          <div class="f-campo"><label>Nombre del establecimiento</label><input type="text" id="nc-nombre" placeholder="Supermercado El Trigal"></div>
+          <div class="f-row2">
+            <div class="f-campo"><label>Tipo de crédito</label>
+              <select id="nc-tipo" style="background:var(--blanco);border:1.5px solid var(--borde);border-radius:9px;padding:11px 14px;font-family:'Barlow',sans-serif;font-size:14px;color:var(--txt);width:100%;outline:none">
+                <option value="informal">Inf. FEMSA (8d)</option>
+                <option value="formal">Formal FEMSA (30d)</option>
+                <option value="local">Local GMAZ (8d)</option>
+                <option value="diario">Diario (1d)</option>
+              </select>
+            </div>
+            <div class="f-campo"><label>Cupo ($)</label><input type="number" id="nc-cupo" placeholder="1000000" min="0"></div>
+          </div>
+          <button class="btn-prim" style="margin-top:4px" onclick="guardarNuevoCliente()">Guardar Cliente</button>
+        </div>
       </div>
       <div class="f-row2">
         <div class="f-campo"><label>Tipo</label><select id="nd-t"><option value="factura">🧾 Factura</option><option value="remision">📋 Remisión</option></select></div>
@@ -1017,9 +1326,13 @@ function renderUltimos(){
   if(!ul.length){cont.innerHTML='<p style="font-size:12px;color:var(--txt-s)">Sin documentos aún</p>';return}
   cont.innerHTML=ul.map(doc=>{
     const c=CLIENTES.find(x=>x.id===doc.cliente_id);
+    const esLiq=S&&S.rol==='liquidacion';
+    const esGer=S&&S.rol==='gerencia';
+    const puedeAnular=esLiq||esGer;
     return`<div class="doc-item pendiente" style="margin-bottom:7px">
       <div class="d-row"><div class="d-num">${doc.numero}</div><div class="d-val">${fmt(doc.valor)}</div></div>
       <div class="d-meta"><span class="tag">${doc.tipo==='factura'?'🧾':'📋'} ${doc.tipo}</span><span class="d-fecha">${c?c.ruta+' · '+c.nombre:'—'}</span><span class="d-fecha">Vence: ${doc.vencimiento}</span></div>
+      ${puedeAnular?`<div style="margin-top:8px"><button class="btn-sm ${esGer?'rojo':'gris'}" onclick="${esGer?`anularDirecto(${doc.id})`:`solicitarAnulacion(${doc.id})`}">${esGer?'🗑 Anular documento':'⚠ Solicitar anulación'}</button></div>`:''}
     </div>`;
   }).join('');
 }
@@ -1027,6 +1340,61 @@ function renderUltimos(){
 // ═══════════════════════════════════════════════
 // EXCEL
 // ═══════════════════════════════════════════════
+async function solicitarAnulacion(docId){
+  const doc=DOCS.find(d=>d.id===docId);
+  if(!doc){showToast('Documento no encontrado');return}
+  const motivo=prompt(`Motivo de anulación para ${doc.numero}:\n(Sé específico — gerencia revisará esta solicitud)`);
+  if(!motivo||!motivo.trim()){return}
+  setLoading('Enviando solicitud…');
+  try{
+    const c=CLIENTES.find(x=>x.id===doc.cliente_id);
+    const res=await sbInsert('anulaciones',{
+      documento_id:docId, cliente_id:doc.cliente_id,
+      numero_doc:doc.numero, valor_doc:doc.valor,
+      motivo:motivo.trim(), estado:'pendiente',
+      solicitado_por:S.nom
+    });
+    ANULACIONES.unshift(res[0]);
+    setLoading(null);
+    showToast('✓ Solicitud enviada a gerencia');
+  }catch(e){
+    setLoading(null);
+    showToast('Error al enviar solicitud');
+    console.error(e);
+  }
+}
+
+async function anularDirecto(docId){
+  const doc=DOCS.find(d=>d.id===docId);
+  if(!doc){showToast('Documento no encontrado');return}
+  const motivo=prompt(`Motivo de anulación para ${doc.numero}:`);
+  if(!motivo||!motivo.trim())return;
+  if(!confirm(`¿Anular ${doc.numero} por $${doc.valor.toLocaleString('es-CO')}? Esta acción no se puede deshacer.`))return;
+  setLoading('Anulando documento…');
+  try{
+    await sbUpdate('documentos',{saldo:0,observaciones:'ANULADO - '+motivo.trim()},[['id','eq.'+docId]]);
+    // Registrar en anulaciones con estado aprobada
+    await sbInsert('anulaciones',{
+      documento_id:docId, cliente_id:doc.cliente_id,
+      numero_doc:doc.numero, valor_doc:doc.valor,
+      motivo:motivo.trim(), estado:'aprobada',
+      solicitado_por:S.nom, resuelto_por:S.nom,
+      resuelto_en:new Date().toISOString()
+    });
+    doc.saldo=0;doc.observaciones='ANULADO';
+    // Recargar docs
+    DOCS=await sbFetch('documentos',{filters:[['saldo','gt.0']],order:'vencimiento.asc'});
+    ANULACIONES=await sbFetch('anulaciones',{order:'creado_en.desc'});
+    setLoading(null);
+    showToast(`✓ ${doc.numero} anulado`);
+    renderMain();
+  }catch(e){
+    setLoading(null);
+    showToast('Error al anular');
+    console.error(e);
+  }
+}
+
 function exportarExcel(){
   const wb=XLSX.utils.book_new();
   const fmtN=n=>Math.round(n);
