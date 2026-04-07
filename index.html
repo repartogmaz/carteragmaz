@@ -402,6 +402,8 @@ let gerTabActual='resumen'; // resumen | pagos | femsa | anulaciones
 // HELPERS
 // ═══════════════════════════════════════════════
 const fmt=n=>'$'+Math.round(n).toLocaleString('es-CO');
+const canPagar=()=>S&&['liquidacion','gerencia','vendedor_cm'].includes(S.rol);
+const canVerTodo=()=>S&&['liquidacion','gerencia','supervisor'].includes(S.rol);
 
 // Format number input as Colombian currency on blur
 function fmtInput(inp){
@@ -428,9 +430,26 @@ const rutas=()=>[...new Set(CLIENTES.map(c=>c.ruta))].sort();
 
 function base(){
   if(!S)return[];
-  if(S.rol==='vendedor')return CLIENTES.filter(c=>c.ruta===S.ruta);
+  // Vendedor estándar y canal moderno: solo su ruta
+  if(S.rol==='vendedor'||S.rol==='vendedor_cm') return CLIENTES.filter(c=>c.ruta===S.ruta);
+  // Supervisor: sus rutas asignadas (separadas por coma en S.ruta)
+  if(S.rol==='supervisor'){
+    const rutasSup=(S.ruta||'').split(',').map(r=>r.trim()).filter(Boolean);
+    const r=document.getElementById('sel-ruta')?.value||'todas';
+    const clientesSup=CLIENTES.filter(c=>rutasSup.includes(c.ruta));
+    return r==='todas'?clientesSup:clientesSup.filter(c=>c.ruta===r);
+  }
+  // Liquidacion y gerencia: todas las rutas con filtro opcional
   const r=document.getElementById('sel-ruta')?.value||'todas';
   return r==='todas'?CLIENTES:CLIENTES.filter(c=>c.ruta===r);
+}
+
+function rutasVisibles(){
+  if(!S)return[];
+  if(S.rol==='supervisor'){
+    return (S.ruta||'').split(',').map(r=>r.trim()).filter(Boolean).sort();
+  }
+  return rutas();
 }
 
 function showToast(msg){const t=document.getElementById('toast');t.textContent=msg;void t.offsetWidth;t.classList.add('vis');setTimeout(()=>t.classList.remove('vis'),2500)}
@@ -501,10 +520,12 @@ async function login(){
     document.getElementById('login-screen').style.display='none';
     document.getElementById('app').style.display='flex';
     document.getElementById('t-usr').textContent=usr.nombre;
-    document.getElementById('t-mod').textContent={liquidacion:'Liquidación',gerencia:'Gerencia',supervisor:'Supervisor'}[usr.rol]||'Ventas';
-    if(['gerencia','supervisor'].includes(usr.rol))document.getElementById('tab-ger').style.display='';
+    document.getElementById('t-mod').textContent={liquidacion:'Liquidación',gerencia:'Gerencia',supervisor:'Supervisor',vendedor_cm:'Canal Moderno'}[usr.rol]||'Ventas';
+    if(usr.rol==='supervisor')document.getElementById('tab-ger').style.display='';
+    if(usr.rol==='gerencia')document.getElementById('tab-ger').style.display='';
     if(usr.rol==='liquidacion'){document.getElementById('tab-liq').style.display='';document.getElementById('tab-doc').style.display='';document.getElementById('tab-rep').style.display='';}
     if(usr.rol==='gerencia'){document.getElementById('tab-liq').style.display='';document.getElementById('tab-doc').style.display='';document.getElementById('tab-rep').style.display='';}
+    if(usr.rol==='vendedor_cm'){document.getElementById('tab-liq').style.display='';}
     setTab(document.querySelector('.tab-btn[data-tab="cartera"]'));
   }catch(e){
     setLoading(null);
@@ -535,10 +556,12 @@ document.getElementById('inp-p').addEventListener('keydown',e=>{if(e.key==='Ente
     const app=document.getElementById('app');
     app.style.display='flex';
     document.getElementById('t-usr').textContent=usr.nombre;
-    document.getElementById('t-mod').textContent={liquidacion:'Liquidación',gerencia:'Gerencia',supervisor:'Supervisor'}[usr.rol]||'Ventas';
-    if(['gerencia','supervisor'].includes(usr.rol))document.getElementById('tab-ger').style.display='';
+    document.getElementById('t-mod').textContent={liquidacion:'Liquidación',gerencia:'Gerencia',supervisor:'Supervisor',vendedor_cm:'Canal Moderno'}[usr.rol]||'Ventas';
+    if(usr.rol==='supervisor')document.getElementById('tab-ger').style.display='';
+    if(usr.rol==='gerencia')document.getElementById('tab-ger').style.display='';
     if(usr.rol==='liquidacion'){document.getElementById('tab-liq').style.display='';document.getElementById('tab-doc').style.display='';document.getElementById('tab-rep').style.display='';}
     if(usr.rol==='gerencia'){document.getElementById('tab-liq').style.display='';document.getElementById('tab-doc').style.display='';document.getElementById('tab-rep').style.display='';}
+    if(usr.rol==='vendedor_cm'){document.getElementById('tab-liq').style.display='';}
     setTab(document.querySelector('.tab-btn[data-tab="cartera"]'));
   }catch(e){
     sessionStorage.removeItem('gmaz_session');
@@ -599,7 +622,7 @@ function renderCartera(){
     <div class="sec-tit" id="lista-tit">Clientes</div>
     <div class="c-lista" id="lista"></div>`;
   if(['supervisor','gerencia','liquidacion'].includes(S.rol)){
-    document.getElementById('sel-ruta').innerHTML='<option value="todas">📋 Todas las rutas</option>'+rutas().map(r=>`<option value="${r}">${r}</option>`).join('');
+    document.getElementById('sel-ruta').innerHTML='<option value="todas">📋 Todas las rutas</option>'+rutasVisibles().map(r=>`<option value="${r}">${r}</option>`).join('');
     document.getElementById('wrap-ruta').style.display='block';
   }
   document.querySelectorAll('.f-btn[data-g="estado"]').forEach(b=>b.classList.toggle('activo',b.dataset.v===F.estado));
@@ -693,7 +716,11 @@ async function abrirDetalle(id){
         ${p.comprobante_url?`<div><img src="${p.comprobante_url}" style="width:54px;height:54px;object-fit:cover;border-radius:6px;margin-top:6px;cursor:pointer;border:1px solid var(--borde)" onclick="zoomImg('${p.comprobante_url}')"></div>`:''}
         ${esGer?`<button class="btn-sm rojo" style="margin-top:8px" onclick="eliminarPago(${p.id},${id})">🗑 Eliminar pago</button>`:''}
       </div></div>`).join('')||'<p style="font-size:12px;color:var(--txt-s);text-align:center;padding:10px 0">Sin pagos</p>';
-  const btnPagar=(S.rol==='liquidacion'||S.rol==='gerencia')?`<button class="btn-prim" style="margin-bottom:4px" onclick="abrirPago(${id});closeM('m-det')">💳 Registrar Pago</button>`:'';
+  const puedeRegistrarEsteCliente=(
+    S.rol==='liquidacion'||S.rol==='gerencia'||
+    (S.rol==='vendedor_cm'&&c.ruta===S.ruta)
+  );
+  const btnPagar=puedeRegistrarEsteCliente?`<button class="btn-prim" style="margin-bottom:4px" onclick="abrirPago(${id});closeM('m-det')">💳 Registrar Pago</button>`:'';
   document.getElementById('md-body').innerHTML=`
     <div class="s-hero"><div class="lbl">Saldo Pendiente</div><div class="monto ${col}">${fmt(s)}</div><div class="e-txt">${etxt}</div></div>
     ${btnPagar}
@@ -716,13 +743,13 @@ function setGerTab(tab, btn){
 function renderGerencia(){
   const mc=document.getElementById('main');
   const pendAnul=ANULACIONES.filter(a=>a.estado==='pendiente').length;
+  const esSup=S&&S.rol==='supervisor';
   mc.innerHTML=`
     <div class="ger-tabs">
       <button class="ger-tab ${gerTabActual==='resumen'?'activo':''}" onclick="setGerTab('resumen',this)">📊 Resumen</button>
-      <button class="ger-tab ${gerTabActual==='pagos'?'activo':''}" onclick="setGerTab('pagos',this)">💰 Pagos</button>
+      ${!esSup?`<button class="ger-tab ${gerTabActual==='pagos'?'activo':''}" onclick="setGerTab('pagos',this)">💰 Pagos</button>`:''}
       <button class="ger-tab ${gerTabActual==='femsa'?'activo':''}" onclick="setGerTab('femsa',this)">📨 FEMSA</button>
-      <button class="ger-tab ${gerTabActual==='anulaciones'?'activo':''}" onclick="setGerTab('anulaciones',this)">🗑 Anulaciones${pendAnul>0?` <span style="background:var(--alerta);color:#fff;border-radius:10px;padding:1px 6px;font-size:10px">${pendAnul}</span>`:''}
-      </button>
+      ${!esSup?`<button class="ger-tab ${gerTabActual==='anulaciones'?'activo':''}" onclick="setGerTab('anulaciones',this)">🗑 Anulaciones${pendAnul>0?` <span style="background:var(--alerta);color:#fff;border-radius:10px;padding:1px 6px;font-size:10px">${pendAnul}</span>`:''}</button>`:''}
     </div>
     <div id="ger-contenido"></div>`;
   renderGerContenido();
@@ -733,6 +760,14 @@ function renderGerContenido(){
   else if(gerTabActual==='pagos') renderGerPagos();
   else if(gerTabActual==='femsa') renderGerFemsa();
   else if(gerTabActual==='anulaciones') renderGerAnulaciones();
+}
+
+// Supervisor sees limited gerencia tabs
+function tabsGerenciaParaRol(){
+  const esSup=S&&S.rol==='supervisor';
+  return esSup
+    ? ['resumen','femsa']  // supervisor: solo resumen y femsa
+    : ['resumen','pagos','femsa','anulaciones']; // gerencia: todo
 }
 
 function renderGerResumen(){
@@ -977,7 +1012,7 @@ function renderLiquidacion(){
 
 function renderLiqLista(){
   const busq=(document.getElementById('busq-liq')?.value||'').toLowerCase();
-  let lista=CLIENTES.filter(c=>suma(dC(c.id))>0);
+  let lista=(S.rol==='vendedor_cm'?base():CLIENTES).filter(c=>suma(dC(c.id))>0);
   if(busq)lista=lista.filter(c=>c.nombre.toLowerCase().includes(busq)||c.sap.includes(busq)||c.ruta.toLowerCase().includes(busq));
   const ord={rojo:0,amarillo:1,verde:2};
   lista.sort((a,b)=>ord[semaf(dC(a.id))]-ord[semaf(dC(b.id))]);
