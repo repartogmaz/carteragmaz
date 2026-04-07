@@ -402,6 +402,18 @@ let gerTabActual='resumen'; // resumen | pagos | femsa | anulaciones
 // HELPERS
 // ═══════════════════════════════════════════════
 const fmt=n=>'$'+Math.round(n).toLocaleString('es-CO');
+
+// Format number input as Colombian currency on blur
+function fmtInput(inp){
+  const raw=parseFloat(inp.value.replace(/[^0-9]/g,''))||0;
+  inp.dataset.raw=raw;
+  inp.value=raw>0?raw.toLocaleString('es-CO'):'';
+}
+function getRaw(id){
+  const el=document.getElementById(id);
+  if(!el)return 0;
+  return parseFloat(el.dataset.raw||el.value.replace(/[^0-9]/g,''))||0;
+}
 const dias=f=>{const d=new Date(f+'T00:00:00'),h=new Date();h.setHours(0,0,0,0);return Math.round((d-h)/864e5)};
 const estDoc=d=>d.saldo===0?'pagado':dias(d.vencimiento)<0?'vencido':'pendiente';
 const semaf=docs=>{const a=docs.filter(d=>d.saldo>0);if(!a.length)return'verde';if(a.some(d=>dias(d.vencimiento)<0))return'rojo';if(a.some(d=>dias(d.vencimiento)<=2))return'amarillo';return'verde'};
@@ -536,7 +548,7 @@ function renderMain(){
 function renderCartera(){
   document.getElementById('main').innerHTML=`
     <div class="res-grid" id="resumen"></div>
-    <div class="ruta-wrap" id="wrap-ruta" style="display:none"><select id="sel-ruta" onchange="renderMain()"></select></div>
+    <div class="ruta-wrap" id="wrap-ruta" style="display:none"><select id="sel-ruta" onchange="renderResumen();renderLista()"></select></div>
     <div class="f-sec"><span class="f-lbl">Estado</span><div class="f-bar">
       <button class="f-btn activo" data-g="estado" data-v="todos"   onclick="setF('estado','todos',this)">Todos</button>
       <button class="f-btn" data-g="estado" data-v="vencido" onclick="setF('estado','vencido',this)">🔴 Vencidos</button>
@@ -554,7 +566,7 @@ function renderCartera(){
     <div class="sec-tit" id="lista-tit">Clientes</div>
     <div class="c-lista" id="lista"></div>`;
   if(['supervisor','gerencia','liquidacion'].includes(S.rol)){
-    document.getElementById('sel-ruta').innerHTML='<option value="todas">📋 Todas las rutas</option>'+rutas().map(r=>`<option>${r}</option>`).join('');
+    document.getElementById('sel-ruta').innerHTML='<option value="todas">📋 Todas las rutas</option>'+rutas().map(r=>`<option value="${r}">${r}</option>`).join('');
     document.getElementById('wrap-ruta').style.display='block';
   }
   document.querySelectorAll('.f-btn[data-g="estado"]').forEach(b=>b.classList.toggle('activo',b.dataset.v===F.estado));
@@ -607,15 +619,21 @@ function renderLista(){
   }).join('');
 }
 
-function abrirDetalle(id){
+async function abrirDetalle(id){
   const c=CLIENTES.find(x=>x.id===id),docs=dC(id),s=suma(docs.filter(d=>d.saldo>0)),col=semaf(docs);
   document.getElementById('md-ruta').textContent=c.ruta;
   document.getElementById('md-sap').textContent='SAP '+c.sap;
   document.getElementById('md-nom').textContent=c.nombre;
   document.getElementById('md-meta').textContent=`${tipoLbl(c.tipo)} · Cupo: ${fmt(c.cupo)}`;
   const etxt={verde:'Al día',amarillo:'Por vencer',rojo:'Con cartera vencida'}[col];
-  const docsPend=docs.filter(d=>d.saldo>0).sort((a,b)=>new Date(a.vencimiento)-new Date(b.vencimiento));
-  const docsPag=docs.filter(d=>d.saldo===0).sort((a,b)=>new Date(b.vencimiento)-new Date(a.vencimiento));
+  // Load ALL docs for this client (including paid ones) from Supabase
+  let todosLosDocs=docs;
+  try{
+    const allDocs=await sbFetch('documentos',{filters:[['cliente_id','eq.'+id]],order:'vencimiento.desc'});
+    if(allDocs&&allDocs.length)todosLosDocs=allDocs;
+  }catch{}
+  const docsPend=todosLosDocs.filter(d=>d.saldo>0).sort((a,b)=>new Date(a.vencimiento)-new Date(b.vencimiento));
+  const docsPag=todosLosDocs.filter(d=>d.saldo===0&&!String(d.observaciones||'').includes('ANULADO')).sort((a,b)=>new Date(b.vencimiento)-new Date(a.vencimiento));
   const docsH=docsPend.map(doc=>{
     const est=estDoc(doc),dv=dias(doc.vencimiento);
     const dtxt=dv<0?`<span class="d-dias urg">Venció hace ${Math.abs(dv)}d</span>`:dv===0?`<span class="d-dias urg">Hoy</span>`:`<span class="d-dias">En ${dv}d</span>`;
@@ -631,13 +649,16 @@ function abrirDetalle(id){
       <div class="d-meta"><span class="d-est pagado">Pagado</span><span class="tag">${doc.tipo==='factura'?'🧾':'📋'} ${doc.tipo}</span><span class="d-fecha">${doc.emision} → ${doc.vencimiento}</span></div>
     </div>`).join('')}`:'';
   const pagosCliente=PAGOS.filter(p=>p.cliente_id===id).sort((a,b)=>new Date(b.fecha)-new Date(a.fecha));
+  const esGer=S&&S.rol==='gerencia';
   const pagosH=pagosCliente.map(p=>`
     <div class="pago-item"><div class="pago-ico ${medioCls(p.medio)}">${medioIco(p.medio)}</div>
       <div class="pago-det"><div class="pago-val">${fmt(p.valor)}</div>
         <div class="pago-meta">${medioLbl(p.medio)} · ${p.fecha} · ${p.registrado_por}</div>
         <div class="pago-meta">Docs: ${(p.docsAfectados||[]).join(', ')}</div>
         ${p.observaciones?`<div class="pago-obs">"${p.observaciones}"</div>`:''}
+        ${p.ref_ia?`<div class="pago-meta" style="color:var(--verde);font-size:11px">Ref: ${p.ref_ia}</div>`:''}
         ${p.comprobante_url?`<div><img src="${p.comprobante_url}" style="width:54px;height:54px;object-fit:cover;border-radius:6px;margin-top:6px;cursor:pointer;border:1px solid var(--borde)" onclick="zoomImg('${p.comprobante_url}')"></div>`:''}
+        ${esGer?`<button class="btn-sm rojo" style="margin-top:8px" onclick="eliminarPago(${p.id})">🗑 Eliminar pago</button>`:''}
       </div></div>`).join('')||'<p style="font-size:12px;color:var(--txt-s);text-align:center;padding:10px 0">Sin pagos</p>';
   const btnPagar=(S.rol==='liquidacion'||S.rol==='gerencia')?`<button class="btn-prim" style="margin-bottom:4px" onclick="abrirPago(${id});closeM('m-det')">💳 Registrar Pago</button>`:'';
   document.getElementById('md-body').innerHTML=`
@@ -966,7 +987,10 @@ function abrirPago(cId){
       </label>
       <div class="abono-wrap" id="abono-${doc.id}">
         <label>Abono parcial</label>
-        <input type="number" id="monto-${doc.id}" value="${doc.saldo}" min="1" max="${doc.saldo}" oninput="calcTotal()">
+        <input type="text" id="monto-${doc.id}" value="${doc.saldo.toLocaleString('es-CO')}" data-raw="${doc.saldo}"
+          oninput="this.dataset.raw=parseFloat(this.value.replace(/[^0-9]/g,''))||0;calcTotal()"
+          onblur="this.value=parseFloat(this.dataset.raw||0).toLocaleString('es-CO')"
+          style="font-family:'Barlow Condensed',sans-serif;font-size:17px;font-weight:700">
       </div>
     </div>`;
   }).join('');
@@ -1013,14 +1037,15 @@ function toggleDocSel(docId,saldo){
 function calcTotal(){
   let t=0;
   Object.keys(PS.sel).forEach(id=>{const inp=document.getElementById('monto-'+id);t+=inp?parseFloat(inp.value)||0:PS.sel[id];});
-  const el=document.getElementById('p-total');if(el)el.value=t||'';
+  const el=document.getElementById('p-total');
+  if(el){el.value=t>0?t.toLocaleString('es-CO'):'';el.dataset.raw=t;}
   actualizarBtnPago();
 }
 
 function actualizarBtnPago(){
   const btn=document.getElementById('btn-gp');
   if(!btn)return;
-  const total=parseFloat(document.getElementById('p-total')?.value||0);
+  const total=parseFloat(document.getElementById('p-total')?.dataset?.raw||document.getElementById('p-total')?.value?.replace(/[^0-9]/g,'')||0);
   const tieneComp=!!PS.comp;
   if(PS.esDuplicado){
     btn.disabled=true;
@@ -1085,7 +1110,7 @@ async function procesarComp(input){
 async function verificarIA(b64){
   const iaEl=document.getElementById('ia-est');
   const mt=b64.includes('image/png')?'image/png':b64.includes('image/webp')?'image/webp':'image/jpeg';
-  const totalPago=parseFloat(document.getElementById('p-total')?.value||0);
+  const totalPago=parseFloat(document.getElementById('p-total')?.dataset?.raw||document.getElementById('p-total')?.value?.replace(/[^0-9]/g,'')||0);
   try{
     const resp=await fetch('https://qwgauxyphjlywogqqdof.supabase.co/functions/v1/swift-api',{
       method:'POST',
@@ -1100,6 +1125,13 @@ async function verificarIA(b64){
 3. fecha: fecha de la transaccion en formato YYYY-MM-DD
 4. banco: banco o plataforma de origen
 5. cuenta_destino: numero de cuenta o entidad destino si aparece, sino null
+
+IMPORTANTE sobre el valor:
+- En Colombia se usa punto como separador de miles y coma como decimal
+- $57.000,00 = 57000 pesos (los ,00 son centavos, ignorarlos)
+- $212.434 = 212434 pesos
+- $1.500.000 = 1500000 pesos
+- Devuelve el valor siempre como numero entero en pesos, sin decimales, sin puntos, sin comas
 
 Responde UNICAMENTE con JSON valido sin markdown ni texto extra:
 {"referencia":"CODIGO","valor":0,"fecha":"YYYY-MM-DD","banco":"nombre","cuenta_destino":"numero_o_null"}`}
@@ -1199,7 +1231,8 @@ async function guardarPago(cId){
   const abonosPorDoc={};let total=0;
   Object.keys(PS.sel).forEach(docId=>{
     const inp=document.getElementById('monto-'+docId);
-    const abono=inp?Math.min(parseFloat(inp.value)||0,PS.sel[docId]):PS.sel[docId];
+    const raw=inp?parseFloat(inp.dataset.raw||inp.value.replace(/[^0-9]/g,'')||0):0;
+    const abono=Math.min(raw,PS.sel[docId]);
     if(abono>0){abonosPorDoc[docId]=abono;total+=abono;}
   });
   if(total===0){showToast('Selecciona documentos');return}
@@ -1389,7 +1422,10 @@ function renderNuevoDoc(){
         </div>
       </div>
       <div class="f-row2">
-        <div class="f-campo"><label>Valor ($)</label><input type="number" id="nd-v" placeholder="0" min="1"></div>
+        <div class="f-campo"><label>Valor ($)</label>
+<input type="text" id="nd-v" placeholder="0" data-raw="0"
+  oninput="this.dataset.raw=parseFloat(this.value.replace(/[^0-9]/g,''))||0"
+  onblur="this.value=parseFloat(this.dataset.raw||0)>0?parseFloat(this.dataset.raw).toLocaleString('es-CO'):''"></div>
         <div class="f-campo"><label>Vencimiento</label><input type="date" id="nd-venc" readonly style="color:var(--txt-s);background:#F9F9F9"></div>
       </div>
       <div class="f-campo"><label>Observaciones</label><textarea id="nd-obs" placeholder="Opcional…"></textarea></div>
@@ -1442,7 +1478,7 @@ async function guardarDoc(){
   const num=(document.getElementById('nd-n')?.value||'').trim();
   const emision=document.getElementById('nd-e')?.value;
   const vence=document.getElementById('nd-venc')?.value;
-  const valor=parseFloat(document.getElementById('nd-v')?.value)||0;
+  const valor=parseFloat(document.getElementById('nd-v')?.dataset?.raw||document.getElementById('nd-v')?.value?.replace(/[^0-9]/g,'')||0);
   const obs=document.getElementById('nd-obs')?.value||'';
   if(!cId||!num||!emision||!vence||valor<=0){showToast('Completa todos los campos');return}
   // Validar foto obligatoria para formal/informal
