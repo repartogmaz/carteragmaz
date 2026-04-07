@@ -324,6 +324,7 @@ alter table anulaciones disable row level security;
     <button class="tab-btn" data-tab="liquidacion"       onclick="setTab(this)" id="tab-liq"  style="display:none">💳 Liquidar</button>
     <button class="tab-btn" data-tab="nuevo-doc"         onclick="setTab(this)" id="tab-doc"  style="display:none">➕ Documento</button>
     <button class="tab-btn" data-tab="reporte-liq"       onclick="setTab(this)" id="tab-rep"  style="display:none">📥 Reportes</button>
+    <button class="tab-btn" data-tab="admin-clientes"    onclick="setTab(this)" id="tab-adm"  style="display:none">⚙️ Clientes</button>
   </div>
   <div class="main" id="main"></div>
 </div>
@@ -468,7 +469,13 @@ function setLoading(msg){
 // ═══════════════════════════════════════════════
 async function cargarDatos(){
   setLoading('Cargando clientes…');
-  CLIENTES = await sbFetch('clientes', {filters:[['activo','eq.true']], order:'ruta.asc,nombre.asc'});
+  // Gerencia carga todos los clientes (activos e inactivos) para poder gestionarlos
+  // Los demás roles solo ven activos
+  if(S.rol==='gerencia'){
+    CLIENTES = await sbFetch('clientes', {order:'ruta.asc,nombre.asc'});
+  } else {
+    CLIENTES = await sbFetch('clientes', {filters:[['activo','eq.true']], order:'ruta.asc,nombre.asc'});
+  }
 
   setLoading('Cargando documentos…');
   DOCS = await sbFetch('documentos', {filters:[['saldo','gt.0']], order:'vencimiento.asc'});
@@ -524,7 +531,7 @@ async function login(){
     if(usr.rol==='supervisor')document.getElementById('tab-ger').style.display='';
     if(usr.rol==='gerencia')document.getElementById('tab-ger').style.display='';
     if(usr.rol==='liquidacion'){document.getElementById('tab-liq').style.display='';document.getElementById('tab-doc').style.display='';document.getElementById('tab-rep').style.display='';}
-    if(usr.rol==='gerencia'){document.getElementById('tab-liq').style.display='';document.getElementById('tab-doc').style.display='';document.getElementById('tab-rep').style.display='';}
+    if(usr.rol==='gerencia'){document.getElementById('tab-liq').style.display='';document.getElementById('tab-doc').style.display='';document.getElementById('tab-rep').style.display='';document.getElementById('tab-adm').style.display='';}
     if(usr.rol==='vendedor_cm'){document.getElementById('tab-liq').style.display='';}
     setTab(document.querySelector('.tab-btn[data-tab="cartera"]'));
   }catch(e){
@@ -560,7 +567,7 @@ document.getElementById('inp-p').addEventListener('keydown',e=>{if(e.key==='Ente
     if(usr.rol==='supervisor')document.getElementById('tab-ger').style.display='';
     if(usr.rol==='gerencia')document.getElementById('tab-ger').style.display='';
     if(usr.rol==='liquidacion'){document.getElementById('tab-liq').style.display='';document.getElementById('tab-doc').style.display='';document.getElementById('tab-rep').style.display='';}
-    if(usr.rol==='gerencia'){document.getElementById('tab-liq').style.display='';document.getElementById('tab-doc').style.display='';document.getElementById('tab-rep').style.display='';}
+    if(usr.rol==='gerencia'){document.getElementById('tab-liq').style.display='';document.getElementById('tab-doc').style.display='';document.getElementById('tab-rep').style.display='';document.getElementById('tab-adm').style.display='';}
     if(usr.rol==='vendedor_cm'){document.getElementById('tab-liq').style.display='';}
     setTab(document.querySelector('.tab-btn[data-tab="cartera"]'));
   }catch(e){
@@ -577,7 +584,7 @@ function logout(){
   document.getElementById('app').style.display='none';
   document.getElementById('inp-u').value='';document.getElementById('inp-p').value='';
   document.getElementById('err-l').style.display='none';
-  ['tab-ger','tab-liq','tab-doc','tab-rep'].forEach(id=>document.getElementById(id).style.display='none');
+  ['tab-ger','tab-liq','tab-doc','tab-rep','tab-adm'].forEach(id=>document.getElementById(id).style.display='none');
 }
 
 // ═══════════════════════════════════════════════
@@ -596,6 +603,7 @@ function renderMain(){
   else if(tabActual==='liquidacion')renderLiquidacion();
   else if(tabActual==='nuevo-doc')renderNuevoDoc();
   else if(tabActual==='reporte-liq')renderReporteLiq();
+  else if(tabActual==='admin-clientes')renderAdminClientes();
 }
 
 // ═══════════════════════════════════════════════
@@ -1752,6 +1760,252 @@ async function eliminarPago(pagoId, clienteIdOrigen){
     console.error(e);
   }
 }
+
+// ═══════════════════════════════════════════════
+// ADMIN CLIENTES — Módulo gerencia
+// ═══════════════════════════════════════════════
+
+let adminBusq = '';
+let clienteEditando = null;
+
+function renderAdminClientes(){
+  const mc = document.getElementById('main');
+  mc.innerHTML = `
+    <div class="liq-form">
+      <h3>⚙️ Administración de Clientes</h3>
+      <div class="busq-wrap" style="margin-bottom:12px">
+        <span class="ico">🔍</span>
+        <input type="text" id="adm-busq" placeholder="Buscar por nombre, SAP o ruta…"
+          oninput="adminBusq=this.value;renderListaAdmin()" value="${adminBusq}"
+          style="background:var(--panel);border:1.5px solid var(--borde);border-radius:10px;
+          padding:10px 16px 10px 38px;font-family:'Barlow',sans-serif;font-size:13px;
+          color:var(--txt);outline:none;width:100%">
+      </div>
+      <div id="admin-lista"></div>
+    </div>
+    <!-- Modal editar cliente -->
+    <div id="adm-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);
+      z-index:300;align-items:flex-end;justify-content:center">
+      <div style="background:var(--blanco);border-radius:20px 20px 0 0;width:100%;max-width:600px;
+        max-height:88vh;overflow-y:auto;padding:20px 20px 40px;animation:slideUp .3s ease">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+          <div style="font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:22px" id="adm-modal-titulo">Editar Cliente</div>
+          <button onclick="cerrarAdmModal()" style="background:var(--panel);border:none;border-radius:50%;
+            width:34px;height:34px;font-size:16px;cursor:pointer;color:var(--txt-s)">✕</button>
+        </div>
+        <div id="adm-modal-body"></div>
+      </div>
+    </div>`;
+  renderListaAdmin();
+}
+
+function renderListaAdmin(){
+  const busq = adminBusq.toLowerCase().trim();
+  let lista = [...CLIENTES];
+  if(busq) lista = lista.filter(c =>
+    c.nombre.toLowerCase().includes(busq) ||
+    c.sap.includes(busq) ||
+    c.ruta.toLowerCase().includes(busq)
+  );
+  lista.sort((a,b) => a.ruta.localeCompare(b.ruta) || a.nombre.localeCompare(b.nombre));
+
+  const cont = document.getElementById('admin-lista');
+  if(!cont) return;
+
+  if(!lista.length){
+    cont.innerHTML = '<div class="empty"><div class="ico">🔍</div><p>Sin resultados</p></div>';
+    return;
+  }
+
+  const totalActivos = lista.filter(c=>c.activo!==false).length;
+  cont.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <div class="sec-tit">${lista.length} cliente${lista.length!==1?'s':''}</div>
+      <button onclick="abrirNuevoCliente()" class="btn-sm verde" style="padding:7px 14px;font-size:12px">
+        + Nuevo cliente
+      </button>
+    </div>
+    ${lista.map((c,i) => {
+      const saldo = suma(dC(c.id));
+      const col = semaf(dC(c.id));
+      const tc = c.tipo==='informal'?'ti':c.tipo==='formal'?'tf':c.tipo==='local'?'tl':'td';
+      return `<div class="c-card ${col}" style="animation-delay:${i*.02}s;cursor:default">
+        <div class="c-r1">
+          <div class="c-ruta">${c.ruta}</div>
+          <div style="display:flex;gap:6px;align-items:center">
+            ${saldo>0?`<div class="c-saldo ${col}">${fmt(saldo)}</div>`:'<span style="font-size:11px;color:var(--verde)">Al día</span>'}
+          </div>
+        </div>
+        <div class="c-sap">SAP ${c.sap}</div>
+        <div class="c-nom">${c.nombre}</div>
+        <div class="c-tags" style="margin-bottom:8px">
+          <span class="tag ${tc}">${tipoLbl(c.tipo)}</span>
+          <span class="tag">Cupo: ${fmt(c.cupo)}</span>
+          ${c.activo===false?'<span class="tag" style="background:#FFE0E0;color:#C00">Inactivo</span>':''}
+        </div>
+        <div style="display:flex;gap:7px;flex-wrap:wrap">
+          <button class="btn-sm gris" onclick="abrirEditarCliente(${c.id})">✏️ Editar</button>
+          ${c.activo!==false
+            ? `<button class="btn-sm rojo" onclick="toggleActivoCliente(${c.id},false)">⏸ Desactivar</button>`
+            : `<button class="btn-sm verde" onclick="toggleActivoCliente(${c.id},true)">▶ Activar</button>`
+          }
+        </div>
+      </div>`;
+    }).join('')}`;
+}
+
+function abrirNuevoCliente(){
+  clienteEditando = null;
+  document.getElementById('adm-modal-titulo').textContent = '+ Nuevo Cliente';
+  document.getElementById('adm-modal-body').innerHTML = formClienteHTML({});
+  document.getElementById('adm-modal').style.display = 'flex';
+  calcVenceAdmin();
+}
+
+function abrirEditarCliente(id){
+  const c = CLIENTES.find(x=>x.id===id);
+  if(!c) return;
+  clienteEditando = c;
+  document.getElementById('adm-modal-titulo').textContent = 'Editar: ' + c.nombre;
+  document.getElementById('adm-modal-body').innerHTML = formClienteHTML(c);
+  document.getElementById('adm-modal').style.display = 'flex';
+}
+
+function formClienteHTML(c){
+  return `
+    <div class="f-campo"><label>Código SAP (10 dígitos)</label>
+      <input type="text" id="adc-sap" value="${c.sap||''}" maxlength="10" placeholder="0012345001"
+        ${clienteEditando?'readonly style="background:#F5F5F5;color:var(--txt-s)"':''}
+        style="width:100%;background:var(--panel);border:1.5px solid var(--borde);border-radius:9px;
+        padding:11px 14px;font-family:'Barlow',sans-serif;font-size:14px;color:var(--txt);outline:none"></div>
+    <div class="f-campo"><label>Nombre del establecimiento</label>
+      <input type="text" id="adc-nombre" value="${c.nombre||''}" placeholder="Supermercado El Trigal"
+        style="width:100%;background:var(--panel);border:1.5px solid var(--borde);border-radius:9px;
+        padding:11px 14px;font-family:'Barlow',sans-serif;font-size:14px;color:var(--txt);outline:none"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="f-campo"><label>Ruta</label>
+        <input type="text" id="adc-ruta" value="${c.ruta||''}" placeholder="KA4V21"
+          style="width:100%;background:var(--panel);border:1.5px solid var(--borde);border-radius:9px;
+          padding:11px 14px;font-family:'Barlow',sans-serif;font-size:14px;color:var(--txt);outline:none;text-transform:uppercase"
+          oninput="this.value=this.value.toUpperCase()"></div>
+      <div class="f-campo"><label>Tipo de crédito</label>
+        <select id="adc-tipo" style="width:100%;background:var(--panel);border:1.5px solid var(--borde);
+          border-radius:9px;padding:11px 14px;font-family:'Barlow',sans-serif;font-size:14px;
+          color:var(--txt);outline:none;appearance:none">
+          <option value="informal" ${(c.tipo||'informal')==='informal'?'selected':''}>Inf. FEMSA (8d)</option>
+          <option value="formal"   ${c.tipo==='formal'?'selected':''}>Formal FEMSA (30d)</option>
+          <option value="local"    ${c.tipo==='local'?'selected':''}>Local GMAZ (8d)</option>
+          <option value="diario"   ${c.tipo==='diario'?'selected':''}>Diario (1d)</option>
+        </select>
+      </div>
+    </div>
+    <div class="f-campo"><label>Cupo aprobado ($)</label>
+      <input type="text" id="adc-cupo" value="${c.cupo?(c.cupo).toLocaleString('es-CO'):''}"
+        data-raw="${c.cupo||0}" placeholder="1.000.000"
+        oninput="this.dataset.raw=parseFloat(this.value.replace(/[^0-9]/g,''))||0"
+        onblur="this.value=parseFloat(this.dataset.raw||0)>0?parseFloat(this.dataset.raw).toLocaleString('es-CO'):''"
+        style="width:100%;background:var(--panel);border:1.5px solid var(--borde);border-radius:9px;
+        padding:11px 14px;font-family:'Barlow Condensed',sans-serif;font-size:17px;font-weight:700;
+        color:var(--txt);outline:none"></div>
+    ${clienteEditando?`
+    <div class="f-campo"><label>Motivo del cambio <span style="color:var(--txt-s);font-weight:400">(queda registrado)</span></label>
+      <input type="text" id="adc-motivo" placeholder="Ej: Reasignación de ruta, cambio de cupo…"
+        style="width:100%;background:var(--panel);border:1.5px solid var(--borde);border-radius:9px;
+        padding:11px 14px;font-family:'Barlow',sans-serif;font-size:14px;color:var(--txt);outline:none"></div>`:''}
+    <div style="margin-top:6px;display:flex;gap:8px">
+      <button class="btn-prim" style="flex:1" onclick="guardarClienteAdmin()">
+        ${clienteEditando?'Guardar cambios':'Crear cliente'}
+      </button>
+      <button class="btn-sec" style="flex:1" onclick="cerrarAdmModal()">Cancelar</button>
+    </div>`;
+}
+
+function cerrarAdmModal(){
+  document.getElementById('adm-modal').style.display = 'none';
+  clienteEditando = null;
+}
+
+async function guardarClienteAdmin(){
+  const sap = (document.getElementById('adc-sap')?.value||'').trim();
+  const nombre = (document.getElementById('adc-nombre')?.value||'').trim();
+  const ruta = (document.getElementById('adc-ruta')?.value||'').trim().toUpperCase();
+  const tipo = document.getElementById('adc-tipo')?.value||'informal';
+  const cupo = parseFloat(document.getElementById('adc-cupo')?.dataset?.raw||0);
+  const motivo = document.getElementById('adc-motivo')?.value||'';
+
+  if(!nombre||!ruta){showToast('Nombre y ruta son obligatorios');return}
+
+  if(clienteEditando){
+    // EDITAR cliente existente
+    const cambios = {};
+    if(nombre !== clienteEditando.nombre) cambios.nombre = nombre;
+    if(ruta !== clienteEditando.ruta) cambios.ruta = ruta;
+    if(tipo !== clienteEditando.tipo) cambios.tipo = tipo;
+    if(cupo !== clienteEditando.cupo) cambios.cupo = cupo;
+
+    if(!Object.keys(cambios).length){showToast('Sin cambios para guardar');return}
+
+    // Agregar nota de cambio en observaciones si hay motivo
+    if(motivo) cambios.observaciones = `Cambio ${new Date().toISOString().split('T')[0]} por ${S.nom}: ${motivo}`;
+
+    setLoading('Guardando cambios…');
+    try{
+      await sbUpdate('clientes', cambios, [['id','eq.'+clienteEditando.id]]);
+      // Actualizar cache local
+      Object.assign(clienteEditando, cambios);
+      // Si cambió la ruta, actualizar en cache
+      const idx = CLIENTES.findIndex(c=>c.id===clienteEditando.id);
+      if(idx>=0) CLIENTES[idx] = {...CLIENTES[idx], ...cambios};
+      setLoading(null);
+      showToast(`✓ ${nombre} actualizado`);
+      cerrarAdmModal();
+      renderListaAdmin();
+    }catch(e){
+      setLoading(null);
+      showToast('Error al guardar');
+      console.error(e);
+    }
+  } else {
+    // CREAR cliente nuevo
+    if(!sap||sap.length!==10){showToast('SAP debe tener exactamente 10 dígitos');return}
+    setLoading('Creando cliente…');
+    try{
+      const res = await sbInsert('clientes',{sap,nombre,ruta,tipo,cupo,activo:true});
+      CLIENTES.push(res[0]);
+      setLoading(null);
+      showToast(`✓ ${nombre} creado`);
+      cerrarAdmModal();
+      adminBusq = '';
+      renderListaAdmin();
+    }catch(e){
+      setLoading(null);
+      if(e.message.includes('unique'))showToast('SAP ya existe en el sistema');
+      else showToast('Error al crear cliente');
+      console.error(e);
+    }
+  }
+}
+
+async function toggleActivoCliente(id, activo){
+  const c = CLIENTES.find(x=>x.id===id);
+  if(!c)return;
+  const accion = activo?'activar':'desactivar';
+  if(!confirm(`¿${accion.charAt(0).toUpperCase()+accion.slice(1)} al cliente ${c.nombre}?`))return;
+  setLoading(activo?'Activando cliente…':'Desactivando cliente…');
+  try{
+    await sbUpdate('clientes',{activo},[['id','eq.'+id]]);
+    c.activo = activo;
+    setLoading(null);
+    showToast(`✓ ${c.nombre} ${activo?'activado':'desactivado'}`);
+    renderListaAdmin();
+  }catch(e){
+    setLoading(null);
+    showToast('Error al actualizar');
+    console.error(e);
+  }
+}
+
+function calcVenceAdmin(){}  // placeholder — not needed here
 
 function exportarExcel(){
   const wb=XLSX.utils.book_new();
