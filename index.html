@@ -1029,14 +1029,33 @@ function abrirPago(cId){
 
 function toggleDocSel(docId,saldo){
   const chk=document.getElementById('chk-'+docId),aw=document.getElementById('abono-'+docId),di=document.getElementById('di-'+docId);
-  if(chk.checked){PS.sel[docId]=saldo;aw.classList.add('vis');di.classList.add('sel');}
-  else{delete PS.sel[docId];aw.classList.remove('vis');di.classList.remove('sel');}
+  if(chk.checked){
+    PS.sel[docId]=saldo;
+    aw.classList.add('vis');
+    di.classList.add('sel');
+    // Ensure dataset.raw is set on the abono input
+    const inp=document.getElementById('monto-'+docId);
+    if(inp){inp.dataset.raw=saldo;}
+  } else {
+    delete PS.sel[docId];
+    aw.classList.remove('vis');
+    di.classList.remove('sel');
+  }
   calcTotal();
 }
 
 function calcTotal(){
   let t=0;
-  Object.keys(PS.sel).forEach(id=>{const inp=document.getElementById('monto-'+id);t+=inp?parseFloat(inp.value)||0:PS.sel[id];});
+  Object.keys(PS.sel).forEach(id=>{
+    const inp=document.getElementById('monto-'+id);
+    if(inp){
+      // Read from data-raw (reliable) or strip dots and parse
+      const raw=parseFloat(inp.dataset.raw)||(parseFloat(String(inp.value).replace(/\./g,'').replace(',','.'))||0);
+      t+=Math.min(raw, PS.sel[id]);
+    } else {
+      t+=PS.sel[id];
+    }
+  });
   const el=document.getElementById('p-total');
   if(el){el.value=t>0?t.toLocaleString('es-CO'):'';el.dataset.raw=t;}
   actualizarBtnPago();
@@ -1231,7 +1250,12 @@ async function guardarPago(cId){
   const abonosPorDoc={};let total=0;
   Object.keys(PS.sel).forEach(docId=>{
     const inp=document.getElementById('monto-'+docId);
-    const raw=inp?parseFloat(inp.dataset.raw||inp.value.replace(/[^0-9]/g,'')||0):0;
+    let raw=0;
+    if(inp){
+      raw=parseFloat(inp.dataset.raw)||(parseFloat(String(inp.value).replace(/\./g,'').replace(',','.'))||0);
+    } else {
+      raw=PS.sel[docId];
+    }
     const abono=Math.min(raw,PS.sel[docId]);
     if(abono>0){abonosPorDoc[docId]=abono;total+=abono;}
   });
