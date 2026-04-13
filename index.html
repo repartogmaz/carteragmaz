@@ -1238,8 +1238,22 @@ function abrirPago(cId){
           <select id="p-medio"><option value="efectivo">💵 Efectivo</option><option value="transferencia">🏦 Transferencia</option><option value="wallet">💳 Wallet FEMSA</option></select>
         </div>
       </div>
-      <div class="f-campo"><label>Total a aplicar</label>
-        <input type="number" id="p-total" readonly placeholder="Selecciona documentos" style="font-family:'Barlow Condensed',sans-serif;font-size:22px;font-weight:800;color:var(--verde)">
+      <div class="f-campo">
+        <label>Total facturas seleccionadas</label>
+        <input type="text" id="p-total" readonly placeholder="Selecciona documentos"
+          style="font-family:'Barlow Condensed',sans-serif;font-size:22px;font-weight:800;color:var(--rojo);
+          background:var(--panel);border:none;border-radius:9px;padding:12px 14px;width:100%;outline:none">
+      </div>
+      <div class="f-campo" id="campo-overpago" style="display:none">
+        <label>Valor real recibido del cliente
+          <span style="font-size:11px;color:var(--txt-s);font-weight:400"> — si es mayor, la diferencia queda como saldo a favor</span>
+        </label>
+        <input type="text" id="p-total-real" placeholder="Ej: 250.000" data-raw="0" data-user-edited=""
+          oninput="this.dataset.raw=parseFloat(this.value.replace(/[^0-9]/g,''))||0;this.dataset.userEdited='1';actualizarBtnPago()"
+          onblur="this.value=parseFloat(this.dataset.raw||0)>0?parseFloat(this.dataset.raw).toLocaleString('es-CO'):''"
+          style="font-family:'Barlow Condensed',sans-serif;font-size:18px;font-weight:700;
+          background:var(--panel);border:1.5px solid var(--verde);border-radius:9px;padding:11px 14px;width:100%;outline:none;color:var(--verde)">
+        <div id="saldo-favor-preview" style="font-size:12px;color:var(--verde);margin-top:4px;display:none"></div>
       </div>
       <div class="f-campo"><label>Observaciones</label><textarea id="p-obs" placeholder="Ej: Pago parcial acordado…"></textarea></div>
     </div>
@@ -1562,9 +1576,12 @@ async function guardarPago(cId){
     if(abono>0){abonosPorDoc[docId]=abono;total+=abono;}
   });
   // Add any explicit overpayment from p-total vs sum of abonos
-  const sobrante=Math.round(valorPago-total);
   if(total===0){showToast('Selecciona documentos');return}
   const c=CLIENTES.find(x=>x.id===cId);
+  // Check for overpayment
+  const totalIngresadoFinal=parseFloat(document.getElementById('p-total-real')?.dataset?.raw||total);
+  const valorPago=totalIngresadoFinal>total?totalIngresadoFinal:total;
+  const sobrante=Math.round(valorPago-total);
   // Check if saldo_favor should be applied
   const saldoFavorDisp=c.saldo_favor||0;
   if(saldoFavorDisp>0 && total>0){
@@ -1622,7 +1639,14 @@ async function guardarPago(cId){
       c.saldo_favor=nuevoSaldoFavor;
       showToast(`✓ Pago registrado · Saldo a favor: ${fmt(nuevoSaldoFavor)}`);
     }
-    PAGOS.unshift({id:pagoId,cliente_id:cId,fecha,medio,valor:total,observaciones:obs,registrado_por:S.nom,docsAfectados,comprobante_url:pagoRes[0].comprobante_url||null});
+    // Save saldo a favor if overpayment
+    if(sobrante>100){
+      const nuevoSaldoFavor=(c.saldo_favor||0)+sobrante;
+      await sbUpdate('clientes',{saldo_favor:nuevoSaldoFavor},[['id','eq.'+cId]]);
+      c.saldo_favor=nuevoSaldoFavor;
+      showToast('✓ Pago registrado · Saldo a favor: '+fmt(nuevoSaldoFavor));
+    }
+    PAGOS.unshift({id:pagoId,cliente_id:cId,fecha,medio,valor:valorPago,observaciones:obs,registrado_por:S.nom,docsAfectados,comprobante_url:pagoRes[0].comprobante_url||null});
     // Recargar docs desde Supabase para tener saldos frescos
     DOCS=await sbFetch('documentos',{filters:[['saldo','gt.0']],order:'vencimiento.asc'});
 
