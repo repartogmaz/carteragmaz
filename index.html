@@ -1839,9 +1839,9 @@ function renderReporteLiq(){
           <div class="res-card"><div class="etq">Vencido</div><div class="val-big rojo">${fmt(totalVenc)}</div></div>
           <div class="res-card"><div class="etq">Cobrado</div><div class="val-big verde">${fmt(totalCob)}</div></div>
         </div>
-        <button class="btn-prim" onclick="exportarExcel()" style="margin-bottom:10px">📊 Descargar Cartera Completa (Excel)</button>
-        <button class="btn-sec" style="margin-bottom:10px" onclick="exportarPagosHoy()">💳 Descargar Pagos de Hoy (Excel)</button>
-        <button class="btn-sec" onclick="verHistorialDesdeReporte()">📂 Ver Historial de Cartera Pagada</button>
+        <button class="btn-prim" onclick="exportarExcel()" style="margin-bottom:10px">📊 Cartera Activa Pendiente (Excel)</button>
+        <button class="btn-sec" style="margin-bottom:10px" onclick="exportarPagosHoy()">💳 Pagos de Hoy (Excel)</button>
+        <button class="btn-sec" onclick="verHistorialDesdeReporte()">📂 Historial Completo + Descarga Excel</button>
       </div>
     </div>`;
 }
@@ -2777,6 +2777,7 @@ async function guardarPagoGrupal(){
 }
 
 function exportarExcel(){
+  try{
   const wb=XLSX.utils.book_new();
   const fmtN=n=>Math.round(n);
   const h1=[['Ruta','SAP','Cliente','Tipo','Saldo','Docs Activos','Estado']];
@@ -2791,6 +2792,10 @@ function exportarExcel(){
   const ws3=XLSX.utils.aoa_to_sheet(h3);XLSX.utils.book_append_sheet(wb,ws3,'Pagos');
   XLSX.writeFile(wb,`Cartera_GMAZ_${hoyStr}.xlsx`);
   showToast('✓ Excel descargado');
+  }catch(e){
+    showToast('Error al generar Excel: '+e.message);
+    console.error(e);
+  }
 }
 
 </script>
