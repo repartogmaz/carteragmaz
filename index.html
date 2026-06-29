@@ -867,7 +867,17 @@ async function abrirDetalle(id){
       ${puedeRegistrarEsteCliente?`<button class="btn-sm verde" onclick="usarSaldoFavor(${id},${saldoFavor})">Aplicar a factura</button>`:''}
     </div>`:''}
     ${btnPagar}
-    <div class="d-tit">Documentos Pendientes</div>${docsH||'<p style="color:var(--txt-s);font-size:12px;text-align:center;padding:12px 0">Sin documentos pendientes</p>'}
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+      <div class="d-tit" style="margin-bottom:0">Documentos Pendientes</div>
+      ${docsPend.length>0?`<button onclick="copiarResumenCartera(${id})"
+        style="background:var(--panel);border:1.5px solid var(--borde);border-radius:8px;
+        padding:6px 12px;font-family:'Barlow Condensed',sans-serif;font-weight:700;
+        font-size:12px;cursor:pointer;color:var(--txt-s);display:flex;align-items:center;gap:5px;
+        letter-spacing:.3px" title="Copiar resumen para WhatsApp">
+        📋 Copiar para WhatsApp
+      </button>`:''}
+    </div>
+    ${docsH||'<p style="color:var(--txt-s);font-size:12px;text-align:center;padding:12px 0">Sin documentos pendientes</p>'}
     ${docsHPag}
     <div class="d-tit" style="margin-top:18px">Historial de Pagos</div>${pagosH}`;
   document.getElementById('m-det').classList.add('vis');
@@ -3038,6 +3048,46 @@ async function resolverAprobacion(aproId, estado){
   }catch(e){
     setLoading(null);showToast('Error al aplicar pago: '+e.message);console.error(e);
   }
+}
+
+
+function copiarResumenCartera(cId){
+  const c=CLIENTES.find(x=>x.id===cId);
+  if(!c)return;
+  const docs=dC(cId).filter(d=>d.saldo>0).sort((a,b)=>new Date(a.vencimiento)-new Date(b.vencimiento));
+  if(!docs.length){showToast('Sin documentos pendientes');return;}
+  const hoy=new Date();
+  const fechaHoy=hoy.toLocaleDateString('es-CO',{day:'2-digit',month:'2-digit',year:'numeric'});
+  const totalPend=suma(docs);
+  const totalVenc=suma(docs.filter(d=>dias(d.vencimiento)<0));
+  const NL='\n';
+  let msg='*Estimado(a) '+c.nombre+'*'+NL;
+  msg+='_Le informamos el estado de su cuenta con GMAZ a '+fechaHoy+':_'+NL+NL;
+  msg+='\uD83D\uDCCB *DOCUMENTOS PENDIENTES*'+NL;
+  docs.forEach(doc=>{
+    const dv=dias(doc.vencimiento);
+    const fechaVence=new Date(doc.vencimiento+'T00:00:00').toLocaleDateString('es-CO',{day:'2-digit',month:'2-digit',year:'numeric'});
+    let estado='';
+    if(dv<0) estado=' \u26A0\uFE0F *VENCIDO* ('+Math.abs(dv)+'d)';
+    else if(dv===0) estado=' \u26A0\uFE0F *Vence HOY*';
+    else if(dv<=2) estado=' \uD83D\uDD36 Vence pronto';
+    const tipoIcon=doc.tipo==='factura'?'Factura':'Remision';
+    msg+=tipoIcon+' '+doc.numero+' \u2014 '+fmt(doc.saldo)+' \u2014 Vto: '+fechaVence+estado+NL;
+  });
+  msg+=NL;
+  if(totalVenc>0) msg+='\uD83D\uDD34 *Valor vencido: '+fmt(totalVenc)+'*'+NL;
+  msg+='\uD83D\uDCB0 *Total pendiente: '+fmt(totalPend)+'*'+NL+NL;
+  msg+='Para pagos o consultas comuniquese con su asesor de ventas.'+NL;
+  msg+='_GMAZ - Coca-Cola FEMSA_';
+  navigator.clipboard.writeText(msg).then(()=>{
+    showToast('\u2713 Resumen copiado \u2014 pegalo en WhatsApp');
+  }).catch(()=>{
+    const ta=document.createElement('textarea');
+    ta.value=msg;ta.style.position='fixed';ta.style.opacity='0';
+    document.body.appendChild(ta);ta.select();
+    document.execCommand('copy');document.body.removeChild(ta);
+    showToast('\u2713 Resumen copiado \u2014 pegalo en WhatsApp');
+  });
 }
 
 
